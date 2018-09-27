@@ -3,6 +3,12 @@
 
 ENV=$1
 
+if [ -z "${ENV}" ] ; then 
+  echo "Usage: $0 directory" 
+  echo
+  exit 0 
+fi 
+
 APPS="NGINX OPENSSL PCRE LUAJIT LUAROCKS LUA_NGINX WRK"
 
 ROCKS="inspect"
