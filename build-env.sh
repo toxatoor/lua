@@ -3,8 +3,7 @@
 
 ENV=$1
 
-# APPS="NGINX OPENSSL PCRE LUAJIT LUAROCKS LUA_NGINX WRK"
-APPS="NGINX OPENSSL PCRE LUAJIT LUAROCKS LUA_NGINX"
+APPS="NGINX OPENSSL PCRE LUAJIT LUAROCKS LUA_NGINX WRK"
 
 ROCKS="inspect"
 
@@ -35,70 +34,87 @@ LUAROCKS_DOWNLOADS="http://luarocks.github.io/luarocks/releases"
 LUA_NGINX_DOWNLOADS="https://github.com/openresty/lua-nginx-module/archive"
 WRK_DOWNLOADS="https://github.com/wg/wrk/archive"
 
-CWD=$(pwd)
-ROOT=${CWD}/${ENV}
+################################# build functions ##########################################
 
-TMP=$(mktemp -d /tmp/luaenv.XXXXXX)
+function spinner() {
+i=1
+sp="/-\|"
+echo -n ' '
+while read line
+do
+  printf "\b${sp:i++%${#sp}:1}"
+  done
+}
 
-pushd ${TMP}
+function get_source() { 
 
-for _app in ${APPS} 
-do 
+	for _app in ${APPS} 
+	do 
+	
+	 _downloads="${_app}_DOWNLOADS"
+	 _srcfile="${_app}_SRCFILE"
+	 _dstfile="${_app}_DSTFILE"
+	
+	
+	
+	 CMD=$(eval echo curl -L -# \$${_downloads}/\$${_srcfile} ) 
+	 DST=$(eval echo \$${_dstfile} ) 
+	 if [ -z "${DST}" ] ; then DST=$(eval echo \$${_srcfile}) ; fi 
+	 DIR=${DST%.tar.gz}
+	 eval ${_app}_DIR=${DIR}
+         
+         echo "Downloading ${DST}..."	
+	 ${CMD} > ${DST} 
+	
+	 mkdir ${DIR}
+	 tar zxf ${DST} -C ${DIR} --strip-components=1
+	
+	done 
 
- _downloads="${_app}_DOWNLOADS"
- _srcfile="${_app}_SRCFILE"
- _dstfile="${_app}_DSTFILE"
+}
 
+function build_luajit() { 
 
+	pushd ${LUAJIT_DIR} 
+	
+	sed -i -e "s%/usr/local%${ROOT}/luajit%g" Makefile 
+	make 
+	make install 
+	
+	popd 
 
- CMD=$(eval echo curl -L -# \$${_downloads}/\$${_srcfile} ) 
- DST=$(eval echo \$${_dstfile} ) 
- if [ -z "${DST}" ] ; then DST=$(eval echo \$${_srcfile}) ; fi 
- DIR=${DST%.tar.gz}
- eval ${_app}_DIR=${DIR}
+} 
 
- ${CMD} > ${DST} 
+function build_luarocks() { 
 
- mkdir ${DIR}
- tar zxf ${DST} -C ${DIR} --strip-components=1
+	pushd ${LUAROCKS_DIR} 
+	./configure --prefix=${ROOT}/luarocks --with-lua=${ROOT}/luajit 
+	make bootstrap
+	popd 
 
-done 
+}
 
-# Build LuaJIT
+function install_rocks() { 
 
-pushd ${LUAJIT_DIR} 
+	for rock in ${ROCKS} 
+	do 
+		${ROOT}/luarocks/bin/luarocks install ${rock}
+	done 
 
-sed -i -e "s%/usr/local%${ROOT}/luajit%g" Makefile 
-make 
-make install 
+}
 
-popd 
+function build_nginx() { 
 
-# Build luarocks
-
-pushd ${LUAROCKS_DIR} 
-./configure --prefix=${ROOT}/luarocks --with-lua=${ROOT}/luajit 
-make bootstrap
-eval $(${ROOT}/luarocks/bin/luarocks path) 
-for rock in ${ROCKS} 
-do 
- luarocks install ${rock}
-done 
-
-popd 
-
-# Build nginx with Lua 
-
-pushd ${NGINX_DIR} 
-
-export LUAJIT_LIB=${ROOT}/luajit/lib
-export LUAJIT_INC=${ROOT}/luajit/include/luajit-*
-
-./configure --prefix=${ROOT}/nginx --with-openssl=../${OPENSSL_DIR} --add-module=../${LUA_NGINX_DIR}  --with-pcre-jit --with-pcre=../${PCRE_DIR} --with-ld-opt="-Wl,-rpath,${ROOT}/luajit/lib"
-make 
-make install
-
-cat > ${ROOT}/nginx/conf/nginx.conf <<EOF
+	pushd ${NGINX_DIR} 
+	
+	export LUAJIT_LIB=${ROOT}/luajit/lib
+	export LUAJIT_INC=${ROOT}/luajit/include/luajit-*
+	
+	./configure --prefix=${ROOT}/nginx --with-openssl=../${OPENSSL_DIR} --add-module=../${LUA_NGINX_DIR}  --with-pcre-jit --with-pcre=../${PCRE_DIR} --with-ld-opt="-Wl,-rpath,${ROOT}/luajit/lib"
+	make 
+	make install
+	
+	cat > ${ROOT}/nginx/conf/nginx.conf <<EOF
 user  nginx;
 worker_processes  auto;
 # worker_processes  4;
@@ -155,11 +171,62 @@ http {
 
 }
 EOF
+	
+	mkdir ${ROOT}/nginx/lua  ${ROOT}/nginx/conf.d 
+	popd 
 
-mkdir ${ROOT}/nginx/lua 
-popd 
+} 
+
+function build_wrk() { 
+
+	echo
+ 
+} 
+
+############################################################################################
+	
+CWD=$(pwd)
+ROOT=${CWD}/${ENV}
+
+TMP=$(mktemp -d /tmp/luaenv.XXXXXX)
+
+pushd ${TMP}
+
+# Get sources 
+
+echo "Downloading sources..." 
+get_source 
+
+# Build LuaJIT
+
+if [ "${LUAJIT_DIR}" ]; then 
+	echo "Building ${LUAJIT_DIR}..." 
+	build_luajit  | spinner
+fi 
+
+# Build luarocks
+
+if [ "${LUAROCKS_DIR}" ]; then 
+	echo "Building ${LUAROCKS_DIR}..." 
+	build_luarocks | spinner
+	install_rocks  | spinner
+fi
+
+# Build nginx with Lua 
+
+if [ "${NGINX_DIR}" ]; then 
+	echo "Building ${NGINX_DIR}..." 
+	build_nginx  | spinner
+fi
+
+# Build wrk 
+
+if [ "${WRK_DIR}" ]; then 
+	echo "Building ${WRK_DIR}..." 
+	build_wrk 
+fi
 
 echo -ne "\n\n\n### All done, environment set in ${ENV}, use 'source ${ENV}/activate' to start\n\n\n"
 
-rm -rf ${TMP}
+# rm -rf ${TMP}
 
